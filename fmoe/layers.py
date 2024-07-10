@@ -13,6 +13,8 @@ from .gates import NaiveGate
 
 from .fastermoe.config import switch_from_env
 
+import time
+
 
 def mark_module_parallel_comm(module, comm):
     r"""
@@ -56,9 +58,13 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
             world_size,
         )
 
+    print("device: ", inp.get_device(), " before scatter: ", time.time())
     x = tree.map_structure(scatter_func, inp)
+    print("device: ", inp.get_device(), " after scatter: ", time.time())
 
+    print("device: ", inp.get_device(), " before expert: ", time.time())
     x = expert_fn(x, fwd_expert_count)
+    print("device: ", inp.get_device(), " after expert: ", time.time())
 
     out_batch_size = tree.flatten(inp)[0].shape[0]
     if len(gate.shape) == 2:
@@ -74,7 +80,9 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
             world_size,
         )
 
+    print("device: ", inp.get_device(), " before gather: ", time.time())
     outp = tree.map_structure(gather_func, x)
+    print("device: ", inp.get_device(), " after scatter: ", time.time())
     return outp
 
 
@@ -231,7 +239,10 @@ class FMoE(nn.Module):
 
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
+        # record before gate time
+        print("device: ", moe_inp.get_device(), " before gate: ", time.time())
         gate_top_k_idx, gate_score = self.gate(moe_inp)
+        print("device: ", moe_inp.get_device(), " after gate: ", time.time())
 
         if self.gate_hook is not None:
             self.gate_hook(gate_top_k_idx, gate_score, None)
@@ -247,6 +258,8 @@ class FMoE(nn.Module):
             mask = self.mask.view(-1)
             moe_inp = tree.map_structure(delete_mask_func, moe_inp)
             gate_top_k_idx = gate_top_k_idx[mask == 0, :]
+
+        print("device: ", moe_inp.get_device(), " after gate 2 : ", time.time())
 
         fwd = _fmoe_general_global_forward(
             moe_inp, gate_top_k_idx, self.expert_fn_single if fmoe_faster_schedule else self.expert_fn,
