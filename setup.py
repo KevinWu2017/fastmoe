@@ -65,7 +65,9 @@ if __name__ == '__main__':
                     'cxx': cxx_flags,
                     'nvcc': cxx_flags
                     },
-                libraries=ext_libs
+                libraries=ext_libs,
+                # add the path of nccl library
+                library_dirs=['/usr/local/lib'],
                 )
             ],
         cmdclass={

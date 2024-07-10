@@ -9,7 +9,7 @@
 #define NCCL_SAFE_CALL(__fn__) { \
     auto __res__ = __fn__; \
     if (__res__ != ncclSuccess) { \
-        fprintf(stderr, "NCCL Error at %s:%d value %d\n", __FILE__, __LINE__, __res__); \
+        fprintf(stderr, "NCCL Error at %s:%d value %s\n", __FILE__, __LINE__, ncclGetErrorString(__res__)); \
         exit(-1); \
     } \
 }

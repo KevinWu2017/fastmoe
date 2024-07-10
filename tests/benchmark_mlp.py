@@ -11,6 +11,7 @@ import os
 rank = None
 world_size = None
 dev_name_default = "cuda:0"
+local_rank = None
 
 
 class BruteForceMoE(nn.Module):
@@ -49,6 +50,7 @@ class BruteForceMoE(nn.Module):
 
 
 def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k):
+    torch.cuda.set_device(local_rank)
     torch.manual_seed(42 + rank)
     torch.cuda.manual_seed(42 + rank)
     if rank == 0:
@@ -78,7 +80,8 @@ def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k)
         world_size=world_size,
         top_k=top_k,
     ).cuda(dev_name)
-    moe.train()
+    # moe.train()
+    moe.eval()
 
     # warm up
     for _ in range(4):
@@ -86,7 +89,7 @@ def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k)
 
     n_runs = 16
     tott = 0.0
-    backt = 0.0
+    # backt = 0.0
     maxt = 0.0
     sqtot = 0.0
     for i in range(n_runs):
@@ -96,14 +99,14 @@ def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k)
 
         loss = o.sum()
 
-        bts = time.time()
-        loss.backward()
-        bte = time.time()
+        # bts = time.time()
+        # loss.backward()
+        # bte = time.time()
 
         tott += te - ts
         sqtot += (te - ts) ** 2
         maxt = max(maxt, te - ts)
-        backt += bte - bts
+        # backt += bte - bts
 
     gflops = (
         2e-9
@@ -114,24 +117,26 @@ def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k)
         )
         / tott
     )
-    print(
-        "Time mean/max/stdev/back {:.3f} {:.3f} {:.3f} {:.3f} ms, {:.3f} GFLOPs".format(
-            tott * 1e3 / n_runs,
-            maxt * 1e3,
-            (sqtot / n_runs - (tott / n_runs) ** 2) * 1e3 * top_k / n_runs,
-            backt * 1e3 / n_runs,
-            gflops,
-        )
-    )
+    # print(
+    #     "Time mean/max/stdev/back {:.3f} {:.3f} {:.3f} {:.3f} ms, {:.3f} GFLOPs".format(
+    #         tott * 1e3 / n_runs,
+    #         maxt * 1e3,
+    #         (sqtot / n_runs - (tott / n_runs) ** 2) * 1e3 * top_k / n_runs,
+    #         backt * 1e3 / n_runs,
+    #         gflops,
+    #     )
+    # )
 
 
 if __name__ == "__main__":
     if int(os.environ["WORLD_SIZE"]) > 1:
         torch.distributed.init_process_group(backend="nccl")
         rank = torch.distributed.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK"))
         world_size = torch.distributed.get_world_size()
     else:
         rank = 0
+        local_rank = 0
         world_size = 1
     batch_size = int(os.environ.get("BATCH_SIZE", "4096"))
     d_model = int(os.environ.get("D_MODEL", "1024"))
