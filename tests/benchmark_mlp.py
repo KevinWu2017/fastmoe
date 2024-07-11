@@ -7,11 +7,15 @@ import time
 import sys
 import os
 
+import json
+
 
 rank = None
 world_size = None
 dev_name_default = "cuda:0"
 local_rank = None
+
+log = []
 
 
 class BruteForceMoE(nn.Module):
@@ -79,6 +83,7 @@ def benchmark_mlp(MOELayer, batch_size, in_feat, hidden_feat, num_expert, top_k)
         d_hidden=hidden_feat,
         world_size=world_size,
         top_k=top_k,
+        log=log
     ).cuda(dev_name)
     # moe.train()
     moe.eval()
@@ -143,6 +148,10 @@ if __name__ == "__main__":
     d_hidden = int(os.environ.get("D_HIDDEN", "4096"))
     num_expert = int(os.environ.get("NUM_EXPERT", "64"))
     top_k = int(os.environ.get("TOP_K", "2"))
+    file_path = sys.argv[1]
     benchmark_mlp(FMoETransformerMLP, batch_size, d_model, d_hidden, num_expert, top_k)
     if world_size == 1:
         benchmark_mlp(BruteForceMoE, batch_size, d_model, d_hidden, num_expert, top_k)
+
+    with open(file_path, 'w') as file:
+        json.dump(log, file, indent=4)  # Write the log list as JSON into the file

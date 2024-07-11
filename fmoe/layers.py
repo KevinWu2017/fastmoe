@@ -15,6 +15,8 @@ from .fastermoe.config import switch_from_env
 
 import time
 
+log_dict = {}
+
 
 def mark_module_parallel_comm(module, comm):
     r"""
@@ -57,14 +59,17 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
             fwd_batch_size,
             world_size,
         )
-
-    print("device: ", inp.get_device(), " before scatter: ", time.time())
+    # print("device: ", inp.get_device(), " before scatter: ", time.time())
+    log_dict["before_scatter"] = time.time()
     x = tree.map_structure(scatter_func, inp)
-    print("device: ", inp.get_device(), " after scatter: ", time.time())
+    log_dict["after_scatter"] = time.time()
+    # print("device: ", inp.get_device(), " after scatter: ", time.time())
 
-    print("device: ", inp.get_device(), " before expert: ", time.time())
+    log_dict["before_expert"] = time.time()
+    # print("device: ", inp.get_device(), " before expert: ", time.time())
     x = expert_fn(x, fwd_expert_count)
-    print("device: ", inp.get_device(), " after expert: ", time.time())
+    log_dict["after_expert"] = time.time()
+    # print("device: ", inp.get_device(), " after expert: ", time.time())
 
     out_batch_size = tree.flatten(inp)[0].shape[0]
     if len(gate.shape) == 2:
@@ -80,9 +85,11 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
             world_size,
         )
 
-    print("device: ", inp.get_device(), " before gather: ", time.time())
+    log_dict["before_gather"] = time.time()
+    # print("device: ", inp.get_device(), " before gather: ", time.time())
     outp = tree.map_structure(gather_func, x)
-    print("device: ", inp.get_device(), " after scatter: ", time.time())
+    log_dict["after_gather"] = time.time()
+    # print("device: ", inp.get_device(), " after gather: ", time.time())
     return outp
 
 
@@ -132,6 +139,7 @@ class FMoE(nn.Module):
         mask=None,
         mask_dict=None,
         gate_bias=True,
+        log=None,
     ):
         super().__init__()
         self.num_expert = num_expert
@@ -168,6 +176,11 @@ class FMoE(nn.Module):
         self.mask = mask
         self.mask_dict = mask_dict
         self.moe_group = moe_group
+
+        self.log = log
+
+    def set_log(self, log):
+        self.log = log
 
     def expert_fn(self, inp, fwd_expert_count):
         r"""
@@ -216,7 +229,8 @@ class FMoE(nn.Module):
         according to the gate.  The score of the selected gate given by the
         expert is multiplied to the experts' output tensors as a weight.
         """
-
+        log_dict.clear()
+        log_dict["device"] = moe_inp.get_device()
         moe_inp_batch_size = tree.flatten(
             tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
         )
@@ -240,9 +254,11 @@ class FMoE(nn.Module):
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
         # record before gate time
-        print("device: ", moe_inp.get_device(), " before gate: ", time.time())
+        log_dict["before_gate"] = time.time()
+        # print("device: ", moe_inp.get_device(), " before gate: ", time.time())
         gate_top_k_idx, gate_score = self.gate(moe_inp)
-        print("device: ", moe_inp.get_device(), " after gate: ", time.time())
+        log_dict["after_gate"] = time.time()
+        # print("device: ", moe_inp.get_device(), " after gate: ", time.time())
 
         if self.gate_hook is not None:
             self.gate_hook(gate_top_k_idx, gate_score, None)
@@ -259,13 +275,16 @@ class FMoE(nn.Module):
             moe_inp = tree.map_structure(delete_mask_func, moe_inp)
             gate_top_k_idx = gate_top_k_idx[mask == 0, :]
 
-        print("device: ", moe_inp.get_device(), " after gate 2 : ", time.time())
+        # print("device: ", moe_inp.get_device(), " after gate 2 : ", time.time())
+        log_dict["after_gate_2"] = time.time()
 
         fwd = _fmoe_general_global_forward(
             moe_inp, gate_top_k_idx, self.expert_fn_single if fmoe_faster_schedule else self.expert_fn,
             self.num_expert, self.world_size,
             experts=self.experts
         )
+
+        log_dict["before_recover"] = time.time()
 
         # recover deleted tensors
         if self.mask is not None and self.mask_dict is not None:
@@ -298,7 +317,11 @@ class FMoE(nn.Module):
 
             moe_outp = tree.map_structure(view_func, fwd)
 
+        log_dict["after_recover"] = time.time()
+
         gate_score = gate_score.view(-1, 1, self.top_k)
+
+        log_dict["before_bmm"] = time.time()
 
         def bmm_func(tensor):
             dim = tensor.shape[-1]
@@ -306,6 +329,8 @@ class FMoE(nn.Module):
             return tensor
 
         moe_outp = tree.map_structure(bmm_func, moe_outp)
+
+        log_dict["after_bmm"] = time.time()
 
         if self.slice_size > 1:
 
@@ -322,4 +347,8 @@ class FMoE(nn.Module):
         assert all(
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
+
+        if self.log is not None:
+            self.log.append(log_dict)
+
         return moe_outp
