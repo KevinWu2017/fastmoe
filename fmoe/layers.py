@@ -6,6 +6,8 @@ import os
 import torch
 import torch.nn as nn
 
+import pmoe_mod
+
 from .functions import prepare_forward, ensure_comm
 from .functions import MOEScatter, MOEGather
 from .functions import AllGather, Slice
@@ -161,8 +163,6 @@ class FMoE(nn.Module):
             self.experts_fused = False
         else:
             self.experts_fused = True
-            
-        print(gate.__class__)
 
         if issubclass(gate, NaiveGate):
             self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
@@ -219,7 +219,7 @@ class FMoE(nn.Module):
                 mark_module_parallel_comm(self.experts, comm)
         mark_module_parallel_comm(self.gate, "gate")
 
-    def forward(self, moe_inp):
+    def forward(self, moe_inp, set_distribution=False, mode=1):
         r"""
         The FMoE module first computes gate output, and then conduct MoE forward
         according to the gate.  The score of the selected gate given by the
@@ -252,7 +252,7 @@ class FMoE(nn.Module):
 
         # record before gate time
         log_dict["before_gate"] = time.time()
-        gate_top_k_idx, gate_score = self.gate(moe_inp)
+        gate_top_k_idx, gate_score = self.gate(moe_inp, set_distribution=set_distribution, mode=mode)
         # log_dict["after_gate"] = time.time()
 
         if self.gate_hook is not None:

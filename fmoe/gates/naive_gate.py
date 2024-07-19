@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import pmoe_mod
 
 class NaiveGate(BaseGate):
     r"""
@@ -23,7 +24,7 @@ class NaiveGate(BaseGate):
         self.gate = nn.Linear(d_model, self.tot_expert, bias = gate_bias)
         self.top_k = top_k
 
-    def forward(self, inp, return_all_scores=False):
+    def forward(self, inp, return_all_scores=False, set_distribution=False, mode=1):
         r"""
         The naive implementation simply calculates the top-k of a linear layer's
         output.
@@ -33,6 +34,10 @@ class NaiveGate(BaseGate):
             gate, k=self.top_k, dim=-1, largest=True, sorted=False
         )  # [.. x top_k]
         gate_top_k_val = gate_top_k_val.view(-1, self.top_k)
+
+        if set_distribution:
+            # print("NaiveGate: set_distribution, mode is: ", mode)
+            gate_top_k_idx = pmoe_mod.create_distribution(inp.shape[0], self.top_k, self.num_expert, self.world_size, inp.device.index, mode).to(inp.device)
 
         # (BxL) x 1 x top_k
         gate_score = F.softmax(gate_top_k_val, dim=-1)
