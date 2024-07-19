@@ -10,3 +10,4 @@ from .switch_gate import SwitchGate
 from .dc_gate import DCGate
 
 from .swipe_gate import SwipeGate
+from .faster_gate import FasterGate

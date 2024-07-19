@@ -9,7 +9,7 @@ import torch.nn as nn
 from .functions import prepare_forward, ensure_comm
 from .functions import MOEScatter, MOEGather
 from .functions import AllGather, Slice
-from .gates import NaiveGate
+from .gates import NaiveGate, FasterGate
 
 from .fastermoe.config import switch_from_env
 
@@ -59,17 +59,13 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
             fwd_batch_size,
             world_size,
         )
-    # print("device: ", inp.get_device(), " before scatter: ", time.time())
     log_dict["before_scatter"] = time.time()
     x = tree.map_structure(scatter_func, inp)
     log_dict["after_scatter"] = time.time()
-    # print("device: ", inp.get_device(), " after scatter: ", time.time())
 
     log_dict["before_expert"] = time.time()
-    # print("device: ", inp.get_device(), " before expert: ", time.time())
     x = expert_fn(x, fwd_expert_count)
     log_dict["after_expert"] = time.time()
-    # print("device: ", inp.get_device(), " after expert: ", time.time())
 
     out_batch_size = tree.flatten(inp)[0].shape[0]
     if len(gate.shape) == 2:
@@ -86,10 +82,8 @@ def _fmoe_general_global_forward(inp, gate, expert_fn, num_expert, world_size, *
         )
 
     log_dict["before_gather"] = time.time()
-    # print("device: ", inp.get_device(), " before gather: ", time.time())
     outp = tree.map_structure(gather_func, x)
     log_dict["after_gather"] = time.time()
-    # print("device: ", inp.get_device(), " after gather: ", time.time())
     return outp
 
 
@@ -167,6 +161,8 @@ class FMoE(nn.Module):
             self.experts_fused = False
         else:
             self.experts_fused = True
+            
+        print(gate.__class__)
 
         if issubclass(gate, NaiveGate):
             self.gate = gate(d_model, num_expert, world_size, top_k, gate_bias=gate_bias)
@@ -231,6 +227,7 @@ class FMoE(nn.Module):
         """
         log_dict.clear()
         log_dict["device"] = moe_inp.get_device()
+        log_dict["MoE_layer_start"] = time.time()
         moe_inp_batch_size = tree.flatten(
             tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
         )
@@ -255,10 +252,8 @@ class FMoE(nn.Module):
 
         # record before gate time
         log_dict["before_gate"] = time.time()
-        # print("device: ", moe_inp.get_device(), " before gate: ", time.time())
         gate_top_k_idx, gate_score = self.gate(moe_inp)
-        log_dict["after_gate"] = time.time()
-        # print("device: ", moe_inp.get_device(), " after gate: ", time.time())
+        # log_dict["after_gate"] = time.time()
 
         if self.gate_hook is not None:
             self.gate_hook(gate_top_k_idx, gate_score, None)
@@ -275,8 +270,7 @@ class FMoE(nn.Module):
             moe_inp = tree.map_structure(delete_mask_func, moe_inp)
             gate_top_k_idx = gate_top_k_idx[mask == 0, :]
 
-        # print("device: ", moe_inp.get_device(), " after gate 2 : ", time.time())
-        log_dict["after_gate_2"] = time.time()
+        log_dict["after_gate"] = time.time()
 
         fwd = _fmoe_general_global_forward(
             moe_inp, gate_top_k_idx, self.expert_fn_single if fmoe_faster_schedule else self.expert_fn,
@@ -284,7 +278,7 @@ class FMoE(nn.Module):
             experts=self.experts
         )
 
-        log_dict["before_recover"] = time.time()
+        # log_dict["before_experts_forward"] = time.time()
 
         # recover deleted tensors
         if self.mask is not None and self.mask_dict is not None:
@@ -317,11 +311,11 @@ class FMoE(nn.Module):
 
             moe_outp = tree.map_structure(view_func, fwd)
 
-        log_dict["after_recover"] = time.time()
+        log_dict["before_combine"] = time.time()
 
         gate_score = gate_score.view(-1, 1, self.top_k)
 
-        log_dict["before_bmm"] = time.time()
+        # log_dict["before_bmm"] = time.time()
 
         def bmm_func(tensor):
             dim = tensor.shape[-1]
@@ -330,7 +324,7 @@ class FMoE(nn.Module):
 
         moe_outp = tree.map_structure(bmm_func, moe_outp)
 
-        log_dict["after_bmm"] = time.time()
+        # log_dict["after_bmm"] = time.time()
 
         if self.slice_size > 1:
 
@@ -348,6 +342,9 @@ class FMoE(nn.Module):
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
 
+        log_dict["after_combine"] = time.time()
+
+        log_dict["MoE_layer_end"] = time.time()
         if self.log is not None:
             self.log.append(log_dict)
 

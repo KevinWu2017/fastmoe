@@ -63,6 +63,7 @@ class FasterGate(NaiveGate):
         with torch.no_grad():
             top1_idx = top2_idx.view((-1, top_k))[:, 0]
             top1_val = top2_val.view((-1, top_k))[:, 0]
+            # return top1_idx, top1x_val
         c_e = torch.scatter_add(
                 torch.zeros(self.tot_expert, device=top1_idx.device),
                 0,
